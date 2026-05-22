@@ -1,0 +1,20 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Channel {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String
+  category    String
+  thumbnail   String
+  embedCode   String
+  isOnline    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}

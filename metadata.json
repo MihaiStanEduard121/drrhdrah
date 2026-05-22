@@ -1,0 +1,6 @@
+{
+  "name": "StreamRO TV Live",
+  "description": "Platformă românească de live streaming TV cu panou de control admin și catalog complet de canale.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
