@@ -2,9 +2,23 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
-import { PrismaClient } from "@prisma/client";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+import fs from "fs";
+import { initializeApp } from "firebase/app";
+import { 
+  getFirestore, 
+  collection, 
+  getDocs, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  limit 
+} from "firebase/firestore";
 
 dotenv.config();
 
@@ -13,7 +27,75 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
-const prisma = new PrismaClient();
+
+// Read Firebase config from environment variables (like on Vercel) or fallback to local JSON safely
+let firebaseConfig: any;
+try {
+  if (process.env.FIREBASE_PROJECT_ID) {
+    firebaseConfig = {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      appId: process.env.FIREBASE_APP_ID,
+      apiKey: process.env.FIREBASE_API_KEY,
+      authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+      firestoreDatabaseId: process.env.FIREBASE_FIRESTORE_DATABASE_ID,
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+    };
+  } else {
+    const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+    if (fs.existsSync(configPath)) {
+      firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+    } else {
+      throw new Error("No Firebase configuration found in environment variables or firebase-applet-config.json");
+    }
+  }
+} catch (err: any) {
+  console.error("Firebase config error:", err.message);
+  throw err;
+}
+
+const appFirebase = initializeApp(firebaseConfig);
+const db = getFirestore(appFirebase, firebaseConfig.firestoreDatabaseId);
+
+// Error handling based on Firebase SKILL instructions
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: null,
+      email: null,
+      emailVerified: null,
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+function generateUUID() {
+  return "ch-" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+}
 
 // Secret configuration
 const JWT_SECRET = process.env.JWT_SECRET || "tv-live-streaming-token-super-secret-key-2026";
@@ -25,9 +107,7 @@ app.use(express.json());
 // Helper text-sanitizer to prevent XSS in iframe or other attributes
 function sanitizeInput(text: string): string {
   if (!text) return "";
-  // Strip script tags
   let cleaned = text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
-  // Strip onclick / onerror / onload handlers
   cleaned = cleaned.replace(/on\w+\s*=\s*"[^"]*"/gi, "");
   cleaned = cleaned.replace(/on\w+\s*=\s*'[^']*'/gi, "");
   cleaned = cleaned.replace(/javascript:/gi, "disabled-js:");
@@ -37,7 +117,6 @@ function sanitizeInput(text: string): string {
 // Ensure the embed code is a standard, responsive iframe embedding or wrap it
 function formatEmbedCode(embed: string): string {
   const cleaned = sanitizeInput(embed);
-  // If the user inputs a pure URL instead of an iframe, wrap it in a proper responsive iframe
   if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
     return `<iframe src="${cleaned}" width="100%" height="100%" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
   }
@@ -64,10 +143,17 @@ function authenticateAdmin(req: any, res: any, next: any) {
 
 // Seed function to prepopulate Romanian TV stations if DB is empty
 async function seedDatabaseIfEmpty() {
+  const pathForCount = 'channels';
   try {
-    const count = await prisma.channel.count();
-    if (count === 0) {
-      console.log("Database empty. Seeding Romanian TV channels...");
+    let querySnapshot;
+    try {
+      querySnapshot = await getDocs(query(collection(db, "channels"), limit(1)));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, pathForCount);
+    }
+
+    if (querySnapshot && querySnapshot.empty) {
+      console.log("Firestore collection empty. Seeding Romanian TV channels...");
       
       const seedChannels = [
         {
@@ -76,7 +162,7 @@ async function seedDatabaseIfEmpty() {
           description: "PRO TV este postul de televiziune comercial de top din România, oferind o grilă bogată de divertisment, știri de încredere, blockbustere și emisiuni de divertisment de mare rating.",
           category: "Divertisment",
           thumbnail: "https://images.unsplash.com/photo-1595603659983-e818cd121021?auto=format&fit=crop&w=600&q=80",
-          embedCode: "https://www.youtube.com/embed/aquz6n8f668", // Mock Live clip 
+          embedCode: "https://www.youtube.com/embed/aquz6n8f668",
           isOnline: true,
         },
         {
@@ -85,7 +171,7 @@ async function seedDatabaseIfEmpty() {
           description: "Digi 24 este un post de televiziune de știri de 24 de ore, independent și echidistant, axat pe informații de calitate, evenimente naționale, analize politice și economice.",
           category: "Știri",
           thumbnail: "https://images.unsplash.com/photo-1504711434969-e33886168f5c?auto=format&fit=crop&w=600&q=80",
-          embedCode: "https://www.youtube.com/embed/5Peo-ivmupE", // Test video placeholder representing stream
+          embedCode: "https://www.youtube.com/embed/5Peo-ivmupE",
           isOnline: true,
         },
         {
@@ -127,11 +213,25 @@ async function seedDatabaseIfEmpty() {
       ];
 
       for (const ch of seedChannels) {
-        // Enforce safe embed
-        ch.embedCode = formatEmbedCode(ch.embedCode);
-        await prisma.channel.create({ data: ch });
+        const id = generateUUID();
+        const chData = {
+          id,
+          name: sanitizeInput(ch.name),
+          slug: ch.slug,
+          description: sanitizeInput(ch.description),
+          category: sanitizeInput(ch.category),
+          thumbnail: sanitizeInput(ch.thumbnail),
+          embedCode: formatEmbedCode(ch.embedCode),
+          isOnline: ch.isOnline,
+          createdAt: new Date().toISOString()
+        };
+        try {
+          await setDoc(doc(db, "channels", id), chData);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `channels/${id}`);
+        }
       }
-      console.log("Românian channels seeded successfully!");
+      console.log("Romanian channels seeded successfully in Firestore!");
     }
   } catch (error) {
     console.error("Failed to seed database: ", error);
@@ -153,7 +253,6 @@ app.post("/api/admin/login", (req, res) => {
   }
 
   if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    // Generate JWT token valid for 24h
     const token = jwt.sign({ email: ADMIN_EMAIL, role: "admin" }, JWT_SECRET, { expiresIn: "24h" });
     return res.json({
       success: true,
@@ -172,84 +271,108 @@ app.get("/api/admin/verify", authenticateAdmin, (req: any, res) => {
 
 // 3. Admin Dashboard Quick Stats
 app.get("/api/admin/stats", authenticateAdmin, async (req, res) => {
+  const pathForStats = 'channels';
   try {
-    const total = await prisma.channel.count();
-    const online = await prisma.channel.count({ where: { isOnline: true } });
-    const offline = await prisma.channel.count({ where: { isOnline: false } });
-    
-    // Categories count
-    const channels = await prisma.channel.findMany({ select: { category: true } });
-    const uniqueCategories = Array.from(new Set(channels.map(c => c.category)));
+    let allSnapshot;
+    try {
+      allSnapshot = await getDocs(collection(db, "channels"));
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.LIST, pathForStats);
+    }
+
+    let total = allSnapshot.size;
+    let online = 0;
+    let offline = 0;
+    const categoriesSet = new Set<string>();
+
+    allSnapshot.forEach((docSnapshot) => {
+      const data = docSnapshot.data();
+      if (data.isOnline) {
+        online++;
+      } else {
+        offline++;
+      }
+      if (data.category) {
+        categoriesSet.add(data.category);
+      }
+    });
 
     res.json({
       total,
       online,
       offline,
-      categoriesCount: uniqueCategories.length
+      categoriesCount: categoriesSet.size
     });
   } catch (error) {
+    console.error("Error fetching stats:", error);
     res.status(500).json({ error: "Eroare la obținerea statisticilor din baza de date." });
   }
 });
 
 // 4. Get Channels (Paginated, Filtered, Searched)
 app.get("/api/channels", async (req, res) => {
+  const pathForList = 'channels';
   try {
     const search = req.query.search ? String(req.query.search).toLowerCase() : "";
     const category = req.query.category ? String(req.query.category) : "";
     const status = req.query.status ? String(req.query.status) : ""; // 'online', 'offline'
     
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.max(1, parseInt(req.query.limit as string) || 9);
-    const skip = (page - 1) * limit;
+    const limitVal = Math.max(1, parseInt(req.query.limit as string) || 9);
+    const skipVal = (page - 1) * limitVal;
 
-    // Build Prisma query clauses
-    const whereClause: any = {};
+    let allSnapshot;
+    try {
+      allSnapshot = await getDocs(collection(db, "channels"));
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.LIST, pathForList);
+    }
 
+    let channelsList: any[] = [];
+    allSnapshot.forEach((docSnapshot) => {
+      channelsList.push({ id: docSnapshot.id, ...docSnapshot.data() });
+    });
+
+    // Support both categories query on all items
+    const allUniqueCategories = Array.from(new Set(channelsList.map(c => c.category).filter(Boolean)));
+
+    // Apply in-memory search and filters to guarantee indices safety on Firestore without complex configs
     if (search) {
-      whereClause.OR = [
-        { name: { contains: search } },
-        { description: { contains: search } },
-        { category: { contains: search } }
-      ];
+      channelsList = channelsList.filter(c => 
+        (c.name && c.name.toLowerCase().includes(search)) ||
+        (c.description && c.description.toLowerCase().includes(search)) ||
+        (c.category && c.category.toLowerCase().includes(search))
+      );
     }
 
     if (category && category !== "Toate") {
-      whereClause.category = category;
+      channelsList = channelsList.filter(c => c.category === category);
     }
 
     if (status === "online") {
-      whereClause.isOnline = true;
+      channelsList = channelsList.filter(c => c.isOnline === true);
     } else if (status === "offline") {
-      whereClause.isOnline = false;
+      channelsList = channelsList.filter(c => c.isOnline === false);
     }
 
-    const [channels, totalCount] = await Promise.all([
-      prisma.channel.findMany({
-        where: whereClause,
-        orderBy: { name: "asc" },
-        skip,
-        take: limit,
-      }),
-      prisma.channel.count({
-        where: whereClause
-      })
-    ]);
-
-    // Gather unique categories for filter widgets
-    const allCategoriesRaw = await prisma.channel.findMany({
-      select: { category: true }
+    // Sort by name ascending
+    channelsList.sort((a, b) => {
+      const nameA = (a.name || "").toLowerCase();
+      const nameB = (b.name || "").toLowerCase();
+      return nameA.localeCompare(nameB);
     });
-    const categories = Array.from(new Set(allCategoriesRaw.map(c => c.category))).filter(Boolean);
+
+    const totalCount = channelsList.length;
+    const paginated = channelsList.slice(skipVal, skipVal + limitVal);
 
     res.json({
-      channels,
-      categories: ["Toate", ...categories],
+      channels: paginated,
+      categories: ["Toate", ...allUniqueCategories],
       pagination: {
         page,
-        limit,
+        limit: limitVal,
         totalItems: totalCount,
-        totalPages: Math.ceil(totalCount / limit)
+        totalPages: Math.ceil(totalCount / limitVal)
       }
     });
   } catch (error) {
@@ -260,36 +383,57 @@ app.get("/api/channels", async (req, res) => {
 
 // 5. Get Single Channel (by ID or Slug)
 app.get("/api/channels/:slug", async (req, res) => {
+  const { slug } = req.params;
+  const pathForChannel = `channels/${slug}`;
   try {
-    const { slug } = req.params;
+    let channel: any = null;
 
-    // Try finding by slug first, otherwise by id representation
-    let channel = await prisma.channel.findUnique({
-      where: { slug }
-    });
+    // First try filtering query by exact slug
+    let querySnapshot;
+    try {
+      querySnapshot = await getDocs(query(collection(db, "channels"), where("slug", "==", slug)));
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.GET, pathForChannel);
+    }
 
-    if (!channel) {
-      // Fallback check by direct ID
-      channel = await prisma.channel.findFirst({
-        where: { id: slug }
-      });
+    if (!querySnapshot.empty) {
+      channel = { id: querySnapshot.docs[0].id, ...querySnapshot.docs[0].data() };
+    } else {
+      // Direct doc ID match fallback
+      try {
+        const docRef = doc(db, "channels", slug);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          channel = { id: docSnap.id, ...docSnap.data() };
+        }
+      } catch (err) {
+        // Suppress ID parsing errors
+      }
     }
 
     if (!channel) {
       return res.status(404).json({ error: "Canalul nu a fost găsit." });
     }
 
-    // Load similar channels in the same category (limit to 4)
-    const similar = await prisma.channel.findMany({
-      where: {
-        category: channel.category,
-        id: { not: channel.id }
-      },
-      take: 4
+    // Get similar channels in same category (limit 4)
+    let similarSnap;
+    try {
+      similarSnap = await getDocs(query(collection(db, "channels"), where("category", "==", channel.category)));
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.LIST, 'channels');
+    }
+
+    const similar: any[] = [];
+    similarSnap.forEach((docSnapshot) => {
+      const data = docSnapshot.data();
+      if (docSnapshot.id !== channel.id && similar.length < 4) {
+        similar.push({ id: docSnapshot.id, ...data });
+      }
     });
 
     res.json({ channel, similar });
   } catch (error) {
+    console.error("Error reading single channel:", error);
     res.status(500).json({ error: "Eroare la citirea canalului." });
   }
 });
@@ -303,36 +447,45 @@ app.post("/api/channels", authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: "Toate câmpurile obligatorii trebuie completate." });
     }
 
-    // Auto generate clean slug if not explicitly passed
+    // Auto generate clean slug
     let cleanSlug = slug ? slug.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") : "";
     if (!cleanSlug) {
       cleanSlug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
     }
 
-    // Verify slug unique
-    const existing = await prisma.channel.findUnique({
-      where: { slug: cleanSlug }
-    });
+    // Check unique slug in Firestore
+    let querySnapshot;
+    try {
+      querySnapshot = await getDocs(query(collection(db, "channels"), where("slug", "==", cleanSlug)));
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.LIST, 'channels');
+    }
 
-    if (existing) {
-      // append some salt
+    if (!querySnapshot.empty) {
       cleanSlug = `${cleanSlug}-${Math.floor(Date.now() / 100000) % 1000}`;
     }
 
     const safeEmbed = formatEmbedCode(embedCode);
     const safeThumbnail = sanitizeInput(thumbnail);
+    const id = generateUUID();
 
-    const created = await prisma.channel.create({
-      data: {
-        name: sanitizeInput(name),
-        slug: cleanSlug,
-        description: sanitizeInput(description),
-        category: sanitizeInput(category),
-        thumbnail: safeThumbnail,
-        embedCode: safeEmbed,
-        isOnline: isOnline !== undefined ? Boolean(isOnline) : true
-      }
-    });
+    const created = {
+      id,
+      name: sanitizeInput(name),
+      slug: cleanSlug,
+      description: sanitizeInput(description),
+      category: sanitizeInput(category),
+      thumbnail: safeThumbnail,
+      embedCode: safeEmbed,
+      isOnline: isOnline !== undefined ? Boolean(isOnline) : true,
+      createdAt: new Date().toISOString()
+    };
+
+    try {
+      await setDoc(doc(db, "channels", id), created);
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.WRITE, `channels/${id}`);
+    }
 
     res.status(201).json({ success: true, channel: created });
   } catch (error: any) {
@@ -347,12 +500,33 @@ app.put("/api/channels/:id", authenticateAdmin, async (req, res) => {
     const { id } = req.params;
     const { name, slug, description, category, thumbnail, embedCode, isOnline } = req.body;
 
-    // Verify channel exists
-    const current = await prisma.channel.findFirst({
-      where: {
-        OR: [{ id }, { slug: id }]
+    // Verify channel exists in Firestore
+    let currentDocRef = doc(db, "channels", id);
+    let currentSnap;
+    try {
+      currentSnap = await getDoc(currentDocRef);
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.GET, `channels/${id}`);
+    }
+
+    let current: any = null;
+
+    if (currentSnap.exists()) {
+      current = { id: currentSnap.id, ...currentSnap.data() };
+    } else {
+      // Find by slug
+      let qSnap;
+      try {
+        qSnap = await getDocs(query(collection(db, "channels"), where("slug", "==", id)));
+      } catch (err) {
+        return handleFirestoreError(err, OperationType.LIST, 'channels');
       }
-    });
+
+      if (!qSnap.empty) {
+        currentDocRef = doc(db, "channels", qSnap.docs[0].id);
+        current = { id: qSnap.docs[0].id, ...qSnap.docs[0].data() };
+      }
+    }
 
     if (!current) {
       return res.status(404).json({ error: "Canalul nu a fost găsit în baza de date." });
@@ -360,31 +534,39 @@ app.put("/api/channels/:id", authenticateAdmin, async (req, res) => {
 
     let cleanSlug = slug ? slug.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") : current.slug;
     
-    // If slug changed, verify unique
+    // Check if slug update requires salting
     if (cleanSlug !== current.slug) {
-      const existing = await prisma.channel.findUnique({
-        where: { slug: cleanSlug }
-      });
-      if (existing) {
+      let qSnap;
+      try {
+        qSnap = await getDocs(query(collection(db, "channels"), where("slug", "==", cleanSlug)));
+      } catch (err) {
+        return handleFirestoreError(err, OperationType.LIST, 'channels');
+      }
+
+      if (!qSnap.empty) {
         cleanSlug = `${cleanSlug}-${Math.random().toString(36).substring(2, 5)}`;
       }
     }
 
-    const updated = await prisma.channel.update({
-      where: { id: current.id },
-      data: {
-        name: name ? sanitizeInput(name) : current.name,
-        slug: cleanSlug,
-        description: description ? sanitizeInput(description) : current.description,
-        category: category ? sanitizeInput(category) : current.category,
-        thumbnail: thumbnail ? sanitizeInput(thumbnail) : current.thumbnail,
-        embedCode: embedCode ? formatEmbedCode(embedCode) : current.embedCode,
-        isOnline: isOnline !== undefined ? Boolean(isOnline) : current.isOnline
-      }
-    });
+    const updatedData = {
+      name: name ? sanitizeInput(name) : current.name,
+      slug: cleanSlug,
+      description: description ? sanitizeInput(description) : current.description,
+      category: category ? sanitizeInput(category) : current.category,
+      thumbnail: thumbnail ? sanitizeInput(thumbnail) : current.thumbnail,
+      embedCode: embedCode ? formatEmbedCode(embedCode) : current.embedCode,
+      isOnline: isOnline !== undefined ? Boolean(isOnline) : current.isOnline
+    };
 
-    res.json({ success: true, channel: updated });
+    try {
+      await updateDoc(currentDocRef, updatedData);
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.WRITE, `channels/${current.id}`);
+    }
+
+    res.json({ success: true, channel: { id: current.id, ...updatedData, createdAt: current.createdAt || new Date().toISOString() } });
   } catch (error: any) {
+    console.error("Update channel error:", error);
     res.status(500).json({ error: "Eroare la actualizarea canalului: " + error.message });
   }
 });
@@ -394,22 +576,45 @@ app.delete("/api/channels/:id", authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const current = await prisma.channel.findFirst({
-      where: {
-        OR: [{ id }, { slug: id }]
-      }
-    });
+    let currentDocRef = doc(db, "channels", id);
+    let currentSnap;
+    try {
+      currentSnap = await getDoc(currentDocRef);
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.GET, `channels/${id}`);
+    }
 
-    if (!current) {
+    let existsValue = currentSnap.exists();
+    let currentId = id;
+
+    if (!existsValue) {
+      let qSnap;
+      try {
+        qSnap = await getDocs(query(collection(db, "channels"), where("slug", "==", id)));
+      } catch (err) {
+        return handleFirestoreError(err, OperationType.LIST, 'channels');
+      }
+
+      if (!qSnap.empty) {
+        currentDocRef = doc(db, "channels", qSnap.docs[0].id);
+        currentId = qSnap.docs[0].id;
+        existsValue = true;
+      }
+    }
+
+    if (!existsValue) {
       return res.status(404).json({ error: "Canalul nu a fost găsit pentru ștergere." });
     }
 
-    await prisma.channel.delete({
-      where: { id: current.id }
-    });
+    try {
+      await deleteDoc(currentDocRef);
+    } catch (err) {
+      return handleFirestoreError(err, OperationType.WRITE, `channels/${currentId}`);
+    }
 
     res.json({ success: true, message: "Canalul a fost șters cu succes!" });
   } catch (error: any) {
+    console.error("Delete channel error:", error);
     res.status(500).json({ error: "Eroare la ștergerea canalului: " + error.message });
   }
 });

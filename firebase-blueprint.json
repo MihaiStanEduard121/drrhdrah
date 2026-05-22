@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "Channel": {
+      "title": "Channel",
+      "description": "Romanian TV Live Streaming Channel",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the channel"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the TV channel"
+        },
+        "slug": {
+          "type": "string",
+          "description": "Clean URL-friendly slug representing the channel"
+        },
+        "description": {
+          "type": "string",
+          "description": "Description of the TV channel and its content"
+        },
+        "category": {
+          "type": "string",
+          "description": "Category like Divertisment, Stiri, Sport, Nationale"
+        },
+        "thumbnail": {
+          "type": "string",
+          "description": "URL of the thumbnail image representing the channel"
+        },
+        "embedCode": {
+          "type": "string",
+          "description": "Iframe embed code or URL of the live stream"
+        },
+        "isOnline": {
+          "type": "boolean",
+          "description": "Whether the channel is currently online and broadcasting"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The timestamp when the channel was added"
+        }
+      },
+      "required": ["id", "name", "slug", "description", "category", "thumbnail", "embedCode", "isOnline", "createdAt"]
+    }
+  },
+  "firestore": {
+    "channels": {
+      "schema": "Channel",
+      "description": "Collection of Romanian TV live streaming channels"
+    }
+  }
+}
